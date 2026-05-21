@@ -1,0 +1,261 @@
+require('dotenv').config();
+const express = require('express');
+
+const {
+  ami,
+  getCallEvents,
+  getCallsSummary,
+  getCallByLinkedId,
+  getAMIStatus
+} = require('./freepbx.service');
+
+const app = express();
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
+
+// Extensiones humanas (orden de prioridad)
+const HUMAN_EXTENSIONS = ['107', '101'];
+
+/* =========================================================
+   BASE
+========================================================= */
+
+app.get('/', (req, res) => {
+  res.send('Middleware OK 🚀');
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    ami: getAMIStatus()
+  });
+});
+
+app.get('/call-events', (req, res) => {
+  const events = getCallEvents();
+  res.json({ ok: true, total: events.length, events });
+});
+
+app.get('/calls-summary', (req, res) => {
+  const calls = getCallsSummary();
+  res.json({ ok: true, total: calls.length, calls });
+});
+
+app.get('/calls-summary/:linkedid', (req, res) => {
+  const call = getCallByLinkedId(req.params.linkedid);
+
+  if (!call) {
+    return res.status(404).json({
+      ok: false,
+      error: 'No existe ese linkedid'
+    });
+  }
+
+  res.json({ ok: true, call });
+});
+
+/* =========================================================
+   FUNCIÓN: LLAMAR EXTENSIÓN
+========================================================= */
+
+function callExtension(fromExtension, toExtension) {
+  return new Promise((resolve, reject) => {
+    ami.action(
+      {
+        Action: 'Originate',
+        Channel: `PJSIP/${fromExtension}`,
+        Context: 'from-internal',
+        Exten: toExtension,
+        Priority: 1,
+        CallerID: `Ariana -> ${toExtension}`,
+        Async: true
+      },
+      (err, response) => {
+        if (err) return reject(err);
+        resolve(response);
+      }
+    );
+  });
+}
+
+///
+function callExternal(fromExtension, phoneNumber) {
+  return new Promise((resolve, reject) => {
+    ami.action(
+      {
+        Action: 'Originate',
+
+        // 👇 ORIGEN (extensión que hace la llamada)
+        Channel: `PJSIP/${fromExtension}`,
+
+        // 👇 IMPORTANTE: contexto de salida
+        Context: 'from-internal',
+
+        // 👇 Número externo
+        Exten: phoneNumber,
+
+        Priority: 1,
+
+        CallerID: `Ariana -> ${phoneNumber}`,
+
+        Async: true
+      },
+      (err, response) => {
+        if (err) return reject(err);
+        resolve(response);
+      }
+    );
+  });
+}
+
+///llamada truncal
+app.post('/call-external', async (req, res) => {
+  const { fromExtension, phoneNumber } = req.body;
+
+  if (!fromExtension || !phoneNumber) {
+    return res.status(400).json({
+      ok: false,
+      error: 'fromExtension y phoneNumber requeridos'
+    });
+  }
+
+  console.log(`📞 Llamada externa: ${fromExtension} → ${phoneNumber}`);
+
+  try {
+    const response = await callExternal(fromExtension, phoneNumber);
+
+    res.json({
+      ok: true,
+      message: 'Llamada enviada',
+      response
+    });
+
+  } catch (error) {
+    console.error('❌ Error llamada externa:', error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+/* =========================================================
+   ESCALAMIENTO AUTOMÁTICO (107 → 101)
+========================================================= */
+
+async function escalateToHuman(customerWaId) {
+  console.log('🔥 Escalando a humano:', customerWaId);
+
+  for (const ext of HUMAN_EXTENSIONS) {
+    try {
+      console.log('📞 Intentando:', ext);
+
+      await callExtension('101', ext);
+
+      console.log('✅ Asignado a:', ext);
+
+      return {
+        ok: true,
+        assignedExtension: ext
+      };
+
+    } catch (error) {
+      console.log('❌ Falló:', ext);
+    }
+  }
+
+  return { ok: false };
+}
+
+/* =========================================================
+   ENDPOINT: ARIANA → MIDDLEWARE
+========================================================= */
+
+app.post('/escalate-from-ariana-demo', async (req, res) => {
+  const { customerWaId } = req.body;
+
+  if (!customerWaId) {
+    return res.status(400).json({
+      ok: false,
+      error: 'customerWaId requerido'
+    });
+  }
+
+  console.log('🤖 Ariana pidió humano para:', customerWaId);
+
+  const result = await escalateToHuman(customerWaId);
+
+  if (result.ok) {
+    return res.json({
+      ok: true,
+      assignedExtension: result.assignedExtension
+    });
+  }
+
+  return res.status(500).json({
+    ok: false,
+    error: 'No hay agentes disponibles'
+  });
+});
+
+
+
+/*PROBANDO BOTON DE LLAMADA*/
+
+app.post('/escalate-from-ariana', async (req, res) => {
+  try {
+    const { customerWaId, targetExtensions = HUMAN_EXTENSIONS } = req.body;
+
+    if (!customerWaId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'customerWaId requerido'
+      });
+    }
+
+    console.log('🤖 Ariana pidió humano para:', customerWaId);
+    console.log('📋 Extensiones objetivo:', targetExtensions);
+
+    for (const ext of targetExtensions) {
+      try {
+        console.log('📞 Intentando:', ext);
+
+        await callExtension('101', ext);
+
+        console.log('✅ Asignado a:', ext);
+
+        return res.json({
+          ok: true,
+          assignedExtension: ext,
+          customerWaId
+        });
+      } catch (error) {
+        console.log(`❌ Falló ${ext}:`, error.message);
+      }
+    }
+
+    return res.status(500).json({
+      ok: false,
+      error: 'No hay agentes disponibles'
+    });
+
+  } catch (error) {
+    console.error('❌ Error en /escalate-from-ariana:', error);
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
+  }
+});
+
+
+
+/* =========================================================
+   START
+========================================================= */
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 Middleware corriendo en puerto ${PORT}`);
+});

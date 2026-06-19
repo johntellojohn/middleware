@@ -5,8 +5,6 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
-    env_file:
-      - stack.env
     volumes:
       - middleware_uploads:/app/uploads
 

@@ -1,11 +1,14 @@
 services:
   middleware:
-    build: .
-    container_name: middleware-freepbx
-    restart: always
-    env_file:
-      - .env
+    image: cawi12345/middleware:latest
+    container_name: middleware
+    restart: unless-stopped
     ports:
       - "3000:3000"
+    env_file:
+      - stack.env
     volumes:
-      - ./uploads:/app/uploads
+      - middleware_uploads:/app/uploads
+
+volumes:
+  middleware_uploads:

@@ -59,7 +59,7 @@ app.use('/uploads', express.static(uploadDir));
 const HUMAN_EXTENSIONS = ['107', '101'];
 
 /* =========================================================
-   BASE
+   BASE DE TEST JOHN
 ========================================================= */
 
 app.get('/', (req, res) => {
